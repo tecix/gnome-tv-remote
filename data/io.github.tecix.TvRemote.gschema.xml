@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="io.github.erenseymen.android-tv-remote" path="/io/github/erenseymen/android_tv_remote/">
+  <schema id="io.github.tecix.TvRemote" path="/io/github/tecix/TvRemote/">
     <key name="last-connected-ip" type="s">
       <default>''</default>
       <summary>Last successfully connected IP address</summary>

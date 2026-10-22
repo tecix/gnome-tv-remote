@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ID="io.github.erenseymen.android-tv-remote"
+APP_ID="io.github.tecix.TvRemote"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${ROOT_DIR}/flatpak/${APP_ID}.yml"
 BUILD_DIR="${ROOT_DIR}/build-dir"

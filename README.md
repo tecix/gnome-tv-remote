@@ -1,16 +1,8 @@
-# TV Remote
+# TV Remote for GNOME
 
-A GTK-based remote control for Android TV and Google TV devices. It speaks the **Android TV Remote protocol v2**, the protocol used by the Google TV phone app, so there is no ADB or developer mode to set up: pair once with the code shown on the TV. Works with TVs that ship the Android TV Remote Service and with receiver apps such as TinyTV Receiver.
+A native GNOME app (GTK 4 + Libadwaita) for controlling an Android TV or Google TV from your Linux desktop. It speaks the **Android TV Remote protocol v2**, the protocol used by the Google TV phone app, so there is no ADB or developer mode to set up: pair once with the code shown on the TV.
 
-![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg) ![Platform](https://img.shields.io/badge/platform-Linux-green.svg) ![GTK](https://img.shields.io/badge/GTK-4.0-orange.svg)
-
-<br>
-
-<div align="center">
-  <a href="https://flathub.org/apps/io.github.erenseymen.android-tv-remote">
-    <img src="https://dl.flathub.org/assets/badges/flathub-badge-en.png" width="300" alt="Download on Flathub">
-  </a>
-</div>
+![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg) ![Platform](https://img.shields.io/badge/platform-Linux-green.svg) ![GTK](https://img.shields.io/badge/GTK-4.0-orange.svg) ![Libadwaita](https://img.shields.io/badge/Libadwaita-1.x-purple.svg)
 
 | Light Mode | Dark Mode |
 | :---: | :---: |
@@ -59,9 +51,12 @@ A GTK-based remote control for Android TV and Google TV devices. It speaks the *
 
 ## Installation
 
+Not on Flathub yet. Build and install the Flatpak from source (needs `flatpak-builder` and the GNOME 49 SDK):
+
 ```bash
-flatpak install flathub io.github.erenseymen.android-tv-remote
-flatpak run io.github.erenseymen.android-tv-remote
+git clone https://github.com/tecix/gnome-tv-remote.git
+cd gnome-tv-remote
+./build-and-run.sh
 ```
 
 ## Setup
@@ -85,21 +80,22 @@ Notes on the protocol: it carries keys, text input, app links and volume/power s
 
 - [Xiaomi TV Box S (2nd Gen)](https://www.epey.com/medya-oynatici/xiaomi-tv-box-s-2nd-gen.html)
 - [Philips 50PUS7000](https://www.epey.com/televizyon/philips-50pus7000.html)
+- Philips TV638_DVB (Android 5.1, no Google services) with TinyTV Receiver
 
 ## Development
 
 ```bash
 # Build and install locally
-flatpak-builder --user --install --force-clean build-dir flatpak/io.github.erenseymen.android-tv-remote.yml
+flatpak-builder --user --install --force-clean build-dir flatpak/io.github.tecix.TvRemote.yml
 
 # Run locally
-flatpak run io.github.erenseymen.android-tv-remote
+flatpak run io.github.tecix.TvRemote
 ```
 
 ## Project Structure
 
 ```
-android-tv-remote/
+gnome-tv-remote/
 ├── src/gnome_adb_tv_remote/     # Main Application Package
 │   ├── core/                  # Engine & Domain Logic
 │   │   ├── remote_v2.py          # Android TV Remote protocol v2: pairing + remote control
@@ -134,6 +130,10 @@ The application utilizes **[PyGObject](https://gitlab.gnome.org/GNOME/pygobject)
 - **Remote control (port 6466)**: a TLS session authenticated by that certificate, carrying key presses (short and long), text input, app links, pings, and volume/power updates from the TV.
 
 Messages are varint length-prefixed protobufs encoded by a small hand-written encoder, and the self-signed client certificate is built with **[rsa](https://github.com/sybrenstuvel/python-rsa)**, so the app needs neither `protobuf` nor `cryptography`. Device discovery uses **[psutil](https://github.com/giampaolo/psutil)** to enumerate network interfaces and scans them for the remote port. Everything is pure Python and architecture-agnostic (`x86_64` and `aarch64`).
+
+## Credits
+
+Started as a fork of [erenseymen/android-tv-remote](https://github.com/erenseymen/android-tv-remote) by Eren Seymen, which drove the TV over ADB and scrcpy. This version replaces that transport with the Android TV Remote protocol v2, adds the Home Assistant route and uses its own app ID (`io.github.tecix.TvRemote`).
 
 ## License
 

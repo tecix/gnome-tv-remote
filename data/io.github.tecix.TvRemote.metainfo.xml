@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.erenseymen.android-tv-remote</id>
+  <id>io.github.tecix.TvRemote</id>
   <name>TV Remote</name>
   <summary>Control an Android TV or Google TV over the network</summary>
   
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   
-  <developer id="io.github.erenseymen">
-    <name>Eren Seymen</name>
+  <developer id="io.github.tecix">
+    <name>Tecix</name>
   </developer>
   
   <description>
@@ -34,22 +34,22 @@
     </p>
   </description>
   
-  <launchable type="desktop-id">io.github.erenseymen.android-tv-remote.desktop</launchable>
+  <launchable type="desktop-id">io.github.tecix.TvRemote.desktop</launchable>
   
   <screenshots>
     <screenshot type="default">
       <caption>Main remote control interface (Dark)</caption>
-      <image>https://raw.githubusercontent.com/erenseymen/android-tv-remote/master/screenshots/dark.png</image>
+      <image>https://raw.githubusercontent.com/tecix/gnome-tv-remote/main/screenshots/dark.png</image>
     </screenshot>
     <screenshot>
       <caption>Main remote control interface (Light)</caption>
-      <image>https://raw.githubusercontent.com/erenseymen/android-tv-remote/master/screenshots/light.png</image>
+      <image>https://raw.githubusercontent.com/tecix/gnome-tv-remote/main/screenshots/light.png</image>
     </screenshot>
   </screenshots>
   
-  <url type="homepage">https://github.com/erenseymen/android-tv-remote</url>
-  <url type="bugtracker">https://github.com/erenseymen/android-tv-remote/issues</url>
-  <url type="vcs-browser">https://github.com/erenseymen/android-tv-remote</url>
+  <url type="homepage">https://github.com/tecix/gnome-tv-remote</url>
+  <url type="bugtracker">https://github.com/tecix/gnome-tv-remote/issues</url>
+  <url type="vcs-browser">https://github.com/tecix/gnome-tv-remote</url>
   
   <content_rating type="oars-1.1" />
   

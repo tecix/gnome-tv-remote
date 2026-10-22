@@ -98,8 +98,8 @@ class InfoDialog(Adw.Window):
         link_box.append(github_label)
 
         github_btn = Gtk.LinkButton(
-            uri="https://github.com/erenseymen/android-tv-remote",
-            label="github.com/erenseymen/android-tv-remote"
+            uri="https://github.com/tecix/gnome-tv-remote",
+            label="github.com/tecix/gnome-tv-remote"
         )
         link_box.append(github_btn)
         

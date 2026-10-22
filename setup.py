@@ -18,13 +18,13 @@ class PostInstallCommand(install):
 
 setup(
     data_files=[
-        ("share/applications", ["data/io.github.erenseymen.android-tv-remote.desktop"]),
-        ("share/metainfo", ["data/io.github.erenseymen.android-tv-remote.metainfo.xml"]),
+        ("share/applications", ["data/io.github.tecix.TvRemote.desktop"]),
+        ("share/metainfo", ["data/io.github.tecix.TvRemote.metainfo.xml"]),
         ("share/icons/hicolor/scalable/apps", [
-            "data/icons/hicolor/scalable/apps/io.github.erenseymen.android-tv-remote.svg"
+            "data/icons/hicolor/scalable/apps/io.github.tecix.TvRemote.svg"
         ]),
-        ("share/glib-2.0/schemas", ["data/io.github.erenseymen.android-tv-remote.gschema.xml"]),
-        ("share/io.github.erenseymen.android-tv-remote/icons/material", [
+        ("share/glib-2.0/schemas", ["data/io.github.tecix.TvRemote.gschema.xml"]),
+        ("share/io.github.tecix.TvRemote/icons/material", [
             "data/icons/material/fiber_manual_record-symbolic.svg",
             "data/icons/material/keyboard_arrow_down-symbolic.svg",
             "data/icons/material/keyboard_arrow_left-symbolic.svg",

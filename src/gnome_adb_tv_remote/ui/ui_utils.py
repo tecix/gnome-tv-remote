@@ -25,7 +25,7 @@ def get_icons_dir() -> str:
         Absolute path to the icons directory.
     """
     # Check Flatpak path first
-    flatpak_path = "/app/share/io.github.erenseymen.android-tv-remote/icons/material"
+    flatpak_path = "/app/share/io.github.tecix.TvRemote/icons/material"
     if os.path.exists(flatpak_path):
         return flatpak_path
     # Fallback to local development path

@@ -1,4 +1,4 @@
-app-id: io.github.erenseymen.android-tv-remote
+app-id: io.github.tecix.TvRemote
 runtime: org.gnome.Platform
 runtime-version: "49"
 sdk: org.gnome.Sdk
@@ -23,7 +23,7 @@ modules:
   # Python dependencies generated with flatpak-pip-generator
   - python3-dependencies.yaml
 
-  - name: android-tv-remote
+  - name: gnome-tv-remote
     buildsystem: simple
     build-commands:
       - pip3 install --prefix=/app --no-deps --no-build-isolation .

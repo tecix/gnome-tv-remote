@@ -103,7 +103,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._mpris.start()
 
         # Initialize GSettings
-        self._settings = Gio.Settings.new("io.github.erenseymen.android-tv-remote")
+        self._settings = Gio.Settings.new("io.github.tecix.TvRemote")
 
         # Load window size
         width = self._settings.get_int("window-width")

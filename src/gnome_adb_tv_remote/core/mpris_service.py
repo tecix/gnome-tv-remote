@@ -497,7 +497,7 @@ class MprisService:
             elif property_name == "Identity":
                 return GLib.Variant("s", "TV Remote")
             elif property_name == "DesktopEntry":
-                return GLib.Variant("s", "io.github.erenseymen.android-tv-remote")
+                return GLib.Variant("s", "io.github.tecix.TvRemote")
             elif property_name == "SupportedUriSchemes":
                 return GLib.Variant("as", [])
             elif property_name == "SupportedMimeTypes":
