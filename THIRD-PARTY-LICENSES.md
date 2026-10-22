@@ -4,15 +4,11 @@ This project uses several third-party software components. Their licenses are li
 
 ## Python Dependencies
 
-### [adb-shell](https://github.com/jeffmhubbard/python-adb-shell)
-- **License:** Apache License 2.0
-- **Copyright:** Copyright (c) 2019 Jeff Moeller / The Android Open Source Project
-
 ### [rsa](https://github.com/sybrenstuvel/python-rsa)
 - **License:** Apache License 2.0
 - **Copyright:** Copyright (c) 2011 Sybren A. Stüvel
 
-### [pyasn1](https://github.com/pyasn1/pyasn1)
+### [pyasn1](https://github.com/pyasn1/pyasn1) (dependency of `rsa`)
 - **License:** BSD 2-Clause License
 - **Copyright:** Copyright (c) 2005-2024, Ilya Etingof <etingof@gmail.com>
 
@@ -20,17 +16,12 @@ This project uses several third-party software components. Their licenses are li
 - **License:** BSD 3-Clause License
 - **Copyright:** Copyright (c) 2009, Giampaolo Rodola
 
-## Bundled Components and Tools
+## Protocol References
 
-### [scrcpy-server](https://github.com/Genymobile/scrcpy)
-- **License:** GNU General Public License v3.0
-- **Copyright:** Copyright (C) 2018-2024 Genymobile
-- **Note:** The `scrcpy-server` binary is downloaded and bundled during the Flatpak build process to provide low-latency input injection.
-
-### [Android Platform Tools (adb)](https://developer.android.com/studio/releases/platform-tools)
-- **License:** Apache License 2.0 / Android Software Development Kit License
-- **Copyright:** Copyright (c) The Android Open Source Project
-- **Note:** The `adb` binary is included in the Flatpak distribution for communication with Android devices.
+### [androidtvremote2](https://github.com/tronikos/androidtvremote2)
+- **License:** Apache License 2.0
+- **Copyright:** Copyright (c) tronikos
+- **Note:** The Android TV Remote protocol v2 message layouts (`polo.proto`, `remotemessage.proto`) follow this project. No code from it is bundled; the messages are encoded by hand in `core/remote_v2.py`.
 
 ---
 

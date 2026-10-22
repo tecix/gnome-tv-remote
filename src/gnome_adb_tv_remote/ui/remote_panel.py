@@ -16,7 +16,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from ..core.adb_client import DeviceInfo  # noqa: E402
+from ..core.remote_v2 import DeviceInfo  # noqa: E402
 from .ui_utils import create_icon, flash_button  # noqa: E402
 
 
@@ -132,18 +132,10 @@ button.remote-button label.caption {
     padding: 8px;
     margin-right: 4px;
 }
-
-.input-button-dimmed {
-    opacity: 0.5;
-}
-
-.input-button-dimmed:hover {
-    opacity: 0.7;
-}
 """
 
 
-# Mapping from ADB keycode to action name (for tooltip lookup)
+# Mapping from Android keycode to action name (for tooltip lookup)
 KEYCODE_TO_ACTION: dict[str, str] = {
     "KEYCODE_DPAD_UP": "dpad-up",
     "KEYCODE_DPAD_DOWN": "dpad-down",
@@ -211,6 +203,9 @@ class RemotePanel(Gtk.Box):
 
         self._on_keyevent = None
         self._on_text = None
+        self._on_keyboard_focus = None
+        self._device_subtitle: str | None = None
+        self._input_route: str | None = None  # None = buttons go directly to the TV
 
         # Map keycode -> button for visual feedback
         self._keycode_buttons: dict[str, Gtk.Button] = {}
@@ -294,12 +289,13 @@ class RemotePanel(Gtk.Box):
         # Media Controls Section (now playing bar + player/volume controls at bottom)
         self._create_media_controls_section()
 
-    def set_handlers(self, *, on_keyevent=None, on_text=None, on_volume_change=None, on_notifications=None, on_long_press=None) -> None:
+    def set_handlers(self, *, on_keyevent=None, on_text=None, on_volume_change=None, on_notifications=None, on_long_press=None, on_keyboard_focus=None) -> None:
         self._on_keyevent = on_keyevent
         self._on_text = on_text
         self._on_volume_change = on_volume_change
         self._on_notifications = on_notifications
         self._on_long_press = on_long_press
+        self._on_keyboard_focus = on_keyboard_focus
 
     def update_tooltips(self, settings: Gio.Settings) -> None:
         """Update button shortcut labels based on current keyboard shortcuts."""
@@ -459,16 +455,33 @@ class RemotePanel(Gtk.Box):
     def update_device_info(self, info: DeviceInfo | None = None, ip: str | None = None) -> None:
         if info and ip:
             self._title.set_title(GLib.markup_escape_text(f"{info.manufacturer} {info.model}"))
-            self._title.set_subtitle(GLib.markup_escape_text(f"Connected to {ip} (Android {info.version})"))
+            self._device_subtitle = f"Connected to {ip}"
         else:
             self._title.set_title("Remote")
-            self._title.set_subtitle("Connect to a device to enable controls")
+            self._device_subtitle = None
+        self._refresh_subtitle()
+
+    def set_input_route(self, route: str | None) -> None:
+        """Show which route buttons take (None = directly over the TV's remote service)."""
+        self._input_route = route
+        self._refresh_subtitle()
+
+    def _refresh_subtitle(self) -> None:
+        device = self._device_subtitle
+        route = self._input_route
+        if route:
+            text = f"{device} · buttons via {route}" if device else f"Buttons via {route}"
+        else:
+            text = device or "Connect to a device to enable controls"
+        self._title.set_subtitle(GLib.markup_escape_text(text))
 
 
     def _on_keyboard_focus_enter(self, *_args) -> None:
         """Called when keyboard input area gains focus."""
         self._keyboard_focused = True
         self._keyboard_entry.set_placeholder_text("Type or Ctrl+V to paste (Esc to exit)")
+        if self._on_keyboard_focus:
+            self._on_keyboard_focus()
 
     def _on_keyboard_focus_leave(self, *_args) -> None:
         """Called when keyboard input area loses focus."""
@@ -1170,36 +1183,11 @@ class RemotePanel(Gtk.Box):
     def set_input_button_sensitive(self, sensitive: bool) -> None:
         """Enable or disable the Input button.
         
-        This is used to disable the button while TV scrcpy connection is being established.
+        This is used to disable the button while the TV connection is being established.
         """
         btn = self._keycode_buttons.get("KEYCODE_TV_INPUT")
         if btn:
             btn.set_sensitive(sensitive)
-
-    def set_input_button_dimmed(self, dimmed: bool) -> None:
-        """Set the Input button to dimmed state (visible but indicates limited support).
-        
-        When dimmed, the button remains clickable but appears faded to indicate
-        that the connected device doesn't natively support Input switching.
-        Clicking it will show alternative device options.
-        
-        Args:
-            dimmed: If True, make the button appear faded.
-        """
-        btn = self._keycode_buttons.get("KEYCODE_TV_INPUT")
-        btn = self._keycode_buttons.get("KEYCODE_TV_INPUT")
-        if btn:
-            tooltip_text = "Input (Select a device with TV inputs)" if dimmed else "Input"
-            shortcut = self._cached_shortcuts.get("tv-input")
-            if shortcut:
-                tooltip_text += f": {shortcut}"
-            
-            if dimmed:
-                btn.add_css_class("input-button-dimmed")
-            else:
-                btn.remove_css_class("input-button-dimmed")
-            
-            btn.set_tooltip_text(tooltip_text)
 
     def set_input_button_tooltip(self, tooltip: str) -> None:
         """Set custom tooltip for the Input button.

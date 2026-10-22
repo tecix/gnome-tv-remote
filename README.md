@@ -1,6 +1,6 @@
 # TV Remote
 
-A GTK-based remote control for Android TV devices, powered by [scrcpy](https://github.com/Genymobile/scrcpy) and ADB. Features low-latency input, keyboard shortcuts, and an intuitive interface.
+A GTK-based remote control for Android TV and Google TV devices. It speaks the **Android TV Remote protocol v2**, the protocol used by the Google TV phone app, so there is no ADB or developer mode to set up: pair once with the code shown on the TV. Works with TVs that ship the Android TV Remote Service and with receiver apps such as TinyTV Receiver.
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg) ![Platform](https://img.shields.io/badge/platform-Linux-green.svg) ![GTK](https://img.shields.io/badge/GTK-4.0-orange.svg)
 
@@ -17,16 +17,15 @@ A GTK-based remote control for Android TV devices, powered by [scrcpy](https://g
 | ![Light Mode](screenshots/light.png) | ![Dark Mode](screenshots/dark.png) |
 
 - **Smart Connectivity**: Automatically discovers and reconnects to devices even if their IP addresses change, using background network scanning and model verification.
-- **Precision Input**: Ultra-low latency input injection (~35-70ms) powered by scrcpy-server, providing smooth navigation and tactile responsiveness.
+- **Simple Pairing**: Pair once with the 6-character code the TV displays; the TV remembers this computer's certificate.
+- **Live State**: Volume level and mute state are pushed by the TV, so the slider stays in sync.
 - **Long Press Support**: Hold buttons (both in UI and keyboard) for secondary actions:
     - **Power**: Long-press for Power Menu (Restart/Sleep/Shutdown).
     - **OK/Select**: Long-press for Context Menus (options, add to favorites).
     - **Home/Back/Menu/Apps**: Long-press for various app-specific shortcuts.
 - **Instant Seeking**: Hold any D-pad direction button (mouse or keyboard) for high-speed "Hold-to-Repeat" navigation.
-- **Premium Interface Dashboard**: Modern GTK4/Libadwaita design featuring:
-    - **Dynamic Dash**: A real-time "Now Playing" dashboard with glassmorphism effects and gradients.
-    - **Media Control**: Play/Pause, Previous/Next track with automatic status synchronization.
-- **TV Input Routing**: Dedicated dialog for switching HDMI sources, with smart support for multi-device setups (e.g., controlling TV inputs while connected to a streaming box).
+- **Media Control**: Play/Pause, Previous/Next track buttons with a modern GTK4/Libadwaita design.
+- **TV Input Routing**: Dedicated dialog for switching HDMI sources on a second TV (set its IP in Preferences), e.g. controlling TV inputs while connected to a streaming box.
 - **Desktop Integration**: Full MPRIS support for controlling playback from GNOME media widgets, lock screen, and notifications.
 - **Customizable Shortcuts**: All keyboard shortcuts are fully configurable in Preferences.
 
@@ -55,6 +54,7 @@ A GTK-based remote control for Android TV devices, powered by [scrcpy](https://g
 | **F** | Search (YouTube) |
 | **Tab** | Focus Keyboard (Input text directly) |
 | **N** | Notifications |
+| **`** | Switch buttons between Direct and Home Assistant |
 
 
 ## Installation
@@ -66,9 +66,20 @@ flatpak run io.github.erenseymen.android-tv-remote
 
 ## Setup
 
-1. Enable **Developer options** and **USB/Wireless debugging** on your TV.
-2. Ensure ADB over network is enabled on **port 5555**.
-3. Accept the authorization prompt on your TV during first connection.
+1. Put the TV and the computer on the same network. The TV must run the Android TV Remote service (ports **6466** and **6467**): Google TV / Android TV devices have it built in; other TVs can use a receiver app such as TinyTV Receiver.
+2. Open **Manage devices**, scan or type the TV's IP address, and click **Connect**.
+3. Type the 6-character code that appears on the TV. That's it: later connections don't need a code.
+
+### Home Assistant route (optional)
+
+Some screens can't be steered by a receiver that injects keys through accessibility (TinyTV Receiver). For those, buttons can go through Home Assistant's **Android Debug Bridge** integration instead, which injects real key events over ADB:
+
+1. Preferences → **Home Assistant**: enter the URL (e.g. `https://ha.example.com`), a long-lived access token (HA profile → Security) and the TV's remote entity (default `remote.living_room_philips_tv`). Press the ✓ on each row, then **Test**.
+2. Switch with the **HA** button in the header or the **`** key (configurable). The subtitle shows which route is active, and the choice is remembered.
+
+Both routes stay connected, so switching is instant and the volume keeps syncing from the TV. Buttons are sent as `remote.send_command` with `input keyevent <code>`. The token is stored in `~/.config/android-tv-remote/home-assistant/token` (owner-only), not in GSettings.
+
+Notes on the protocol: it carries keys, text input, app links and volume/power state. Information that only ADB could read (the "Now Playing" title, whether a box has HDMI inputs) is not available.
 
 ## Tested Devices
 
@@ -91,18 +102,18 @@ flatpak run io.github.erenseymen.android-tv-remote
 android-tv-remote/
 ├── src/gnome_adb_tv_remote/     # Main Application Package
 │   ├── core/                  # Engine & Domain Logic
-│   │   ├── adb_client.py         # Pure-Python ADB client, media & status parsing
+│   │   ├── remote_v2.py          # Android TV Remote protocol v2: pairing + remote control
+│   │   ├── home_assistant.py     # Optional button route through Home Assistant (ADB integration)
 │   │   ├── scanner.py            # High-concurrency network discovery engine
-│   │   ├── scrcpy_controller.py  # Low-latency scrcpy-server protocol handler
 │   │   ├── mpris_service.py      # Linux Media Player (MPRIS) D-Bus integration
-│   │   ├── keystore.py           # Secure RSA key management for ADB Auth
+│   │   ├── keystore.py           # TLS client certificate generation and storage
 │   │   └── network_info.py       # Local network interface & subnet detection
 │   ├── ui/                    # Gtk4/Libadwaita Interface
 │   │   ├── main_window.py        # Application coordinator & event handling
 │   │   ├── remote_panel.py       # Remote controls & Now Playing dashboard
-│   │   ├── device_dialog.py      # Device discovery & pairing manager
+│   │   ├── device_dialog.py      # Device discovery & connection manager
+│   │   ├── pairing_dialog.py     # Pairing code entry
 │   │   ├── tv_remote_dialog.py   # HDMI/Input switching overlay
-│   │   ├── input_device_dialog.py # Multi-device routing selector
 │   │   ├── preferences_dialog.py # Keyboard shortcut & routing settings
 │   │   ├── info_dialog.py        # Help, about and instructions
 │   │   └── ui_utils.py           # Reusable UI components & animations
@@ -117,7 +128,12 @@ android-tv-remote/
 
 ## Technical Overview
 
-The application utilizes **[PyGObject](https://gitlab.gnome.org/GNOME/pygobject)** (GTK4/Libadwaita) to deliver a modern, native Linux user interface. Core communication with Android TV devices is handled by the **[adb-shell](https://github.com/JeffLIrion/adb_shell)** library, providing a pure Python implementation of the ADB protocol, while **[rsa](https://github.com/sybrenstuvel/python-rsa)** and **[pyasn1](https://github.com/pyasn1/pyasn1)** ensure secure key generation and authentication. Device discovery is managed via **[psutil](https://github.com/giampaolo/psutil)**, which enumerates network interfaces to locate available devices. For high-performance, low-latency input injection (~35-70ms), the app integrates **[scrcpy-server](https://github.com/Genymobile/scrcpy)**, communicating directly via a multiplexed pure-Python ADB stream without relying on any external native binaries. This completely architecture-agnostic approach natively supports both `x86_64` and `aarch64` ARM platforms seamlessly.
+The application utilizes **[PyGObject](https://gitlab.gnome.org/GNOME/pygobject)** (GTK4/Libadwaita) to deliver a modern, native Linux user interface. Communication with the TV uses the **Android TV Remote protocol v2** (the protocol of the Google TV phone app, documented by [androidtvremote2](https://github.com/tronikos/androidtvremote2)):
+
+- **Pairing (port 6467)**: a TLS session using the "Polo" protocol. The TV shows a code; the app hashes it with both sides' RSA public keys and sends the result back, after which the TV trusts the app's client certificate.
+- **Remote control (port 6466)**: a TLS session authenticated by that certificate, carrying key presses (short and long), text input, app links, pings, and volume/power updates from the TV.
+
+Messages are varint length-prefixed protobufs encoded by a small hand-written encoder, and the self-signed client certificate is built with **[rsa](https://github.com/sybrenstuvel/python-rsa)**, so the app needs neither `protobuf` nor `cryptography`. Device discovery uses **[psutil](https://github.com/giampaolo/psutil)** to enumerate network interfaces and scans them for the remote port. Everything is pure Python and architecture-agnostic (`x86_64` and `aarch64`).
 
 ## License
 

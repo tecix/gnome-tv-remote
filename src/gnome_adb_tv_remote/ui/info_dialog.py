@@ -66,15 +66,15 @@ class InfoDialog(Adw.Window):
 
         # Instructions Section
         instructions_group = Adw.PreferencesGroup(
-            title="Android TV Preparation",
-            description="Follow these steps on your TV to enable remote control access."
+            title="Connecting to Your TV",
+            description="The app speaks the same remote protocol as the Google TV phone app, so no developer options are needed."
         )
         
         setup_steps = [
-            ("1. Enable Developer Options", "Go to Settings > Device Preferences > About. Find 'Build' and click it 7 times until developer mode is enabled."),
-            ("2. Enable ADB Debugging", "Go to Settings > Device Preferences > Developer Options. Enable 'USB debugging' or 'Wireless debugging'."),
-            ("3. Enable Network Port", "Ensure the TV is listening on port 5555. Some devices may require connecting via USB first and running 'adb tcpip 5555'."),
-            ("4. Authorize Connection", "When you try to connect from this app, look at your TV screen and 'Always allow' the connection request.")
+            ("1. Same Network", "Make sure the TV and this computer are on the same local network. The TV needs its remote service (Google TV / Android TV, or a receiver app such as TinyTV Receiver) listening on ports 6466 and 6467."),
+            ("2. Find the TV", "Open 'Manage devices' and scan the network, or type the TV's IP address."),
+            ("3. Pair Once", "Click Connect. A 6-character code appears on the TV screen; type it into the dialog here."),
+            ("4. Done", "The TV remembers this computer. Later connections, including the automatic one on startup, need no code.")
         ]
 
         for step_title, step_desc in setup_steps:

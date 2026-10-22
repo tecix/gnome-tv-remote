@@ -1,21 +1,25 @@
 """Core functionality for TV Remote."""
 
-from .adb_client import AdbTcpClient, AdbAuthRequiredError, AdbConnectError, DeviceInfo, MediaInfo
-from .scrcpy_controller import (
-    ScrcpyServerController,
-    ScrcpyError,
-    ScrcpyConnectionError,
+from .remote_v2 import (
+    AndroidTvRemote,
+    DeviceInfo,
+    NotPairedError,
+    PairingError,
+    PairingSession,
+    RemoteConnectError,
+    RemoteError,
+    VolumeInfo,
 )
 from .mpris_service import MprisService
 
 __all__ = [
-    "AdbTcpClient",
-    "AdbAuthRequiredError",
-    "AdbConnectError",
+    "AndroidTvRemote",
     "DeviceInfo",
-    "MediaInfo",
-    "ScrcpyServerController",
-    "ScrcpyError",
-    "ScrcpyConnectionError",
+    "NotPairedError",
+    "PairingError",
+    "PairingSession",
+    "RemoteConnectError",
+    "RemoteError",
+    "VolumeInfo",
     "MprisService",
 ]

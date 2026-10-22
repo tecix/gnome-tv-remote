@@ -25,7 +25,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from ..core.network_info import get_ipv4_interface_networks  # noqa: E402
 from ..core.scanner import HostFound, ScanProgress, SubnetScanner  # noqa: E402
-from ..core.adb_client import AdbTcpClient  # noqa: E402
+from ..core.remote_v2 import REMOTE_PORT, probe_paired_device  # noqa: E402
 
 if TYPE_CHECKING:
     from .main_window import MainWindow
@@ -36,9 +36,10 @@ class DeviceDialog(Adw.Window):
     
     Provides:
     - Manual IP address entry for direct connection
-    - Network scanning to discover devices with ADB enabled
+    - Network scanning to discover devices running the Android TV remote service
+    - Pairing (via the code the TV shows) when a device doesn't know us yet
     - Persistence of discovered devices across app sessions
-    - Device info display (model, Android version, latency)
+    - Device info display (model, latency)
     """
 
     def __init__(self, parent: MainWindow) -> None:
@@ -57,11 +58,7 @@ class DeviceDialog(Adw.Window):
         self._discovered_devices: list[dict[str, str | float | None]] = []
         self._device_rows: dict[str, Adw.ActionRow] = {}
         
-        # Pairing state tracking
-        self._pairing_in_progress = False
-        self._pairing_ip: str | None = None
-        self._pairing_timer_id: int | None = None
-        self._pairing_button: Gtk.Button | None = None
+        self._connect_in_progress = False
         self._ip_entry_button: Gtk.Button | None = None
 
         self._build_ui()
@@ -74,9 +71,6 @@ class DeviceDialog(Adw.Window):
         self.add_controller(key_controller)
 
     def _on_close_request(self, *_args) -> bool:
-        # Reset pairing state if in progress
-        if self._pairing_in_progress:
-            self._reset_pairing_state()
         self.hide()
         return True
 
@@ -104,10 +98,9 @@ class DeviceDialog(Adw.Window):
                 ip = device.get("ip")
                 latency = device.get("latency_ms", 0.0)
                 model = device.get("model")
-                version = device.get("version")
                 device_name = device.get("device_name")
                 if ip:
-                    self._on_scan_found_ui(ip, latency, save=False, model=model, version=version, device_name=device_name)
+                    self._on_scan_found_ui(ip, latency, save=False, model=model, device_name=device_name)
         except Exception:
             pass
 
@@ -189,7 +182,7 @@ class DeviceDialog(Adw.Window):
             self._parent._toast("Invalid IP address")
             return
 
-        self._start_pairing_check(ip, self._ip_entry_button)
+        self._start_connect(ip, self._ip_entry_button)
 
     def _on_scan_clicked(self, *_args) -> None:
         if self._scan_in_progress:
@@ -213,7 +206,7 @@ class DeviceDialog(Adw.Window):
             return
 
         self._scan_cancel = threading.Event()
-        scanner = SubnetScanner(port=5555, timeout_s=0.35, concurrency=256)
+        scanner = SubnetScanner(port=REMOTE_PORT, timeout_s=0.35, concurrency=256)
 
         def on_progress(p: ScanProgress) -> None:
             GLib.idle_add(self._on_scan_progress_ui, p.scanned, p.total)
@@ -221,7 +214,7 @@ class DeviceDialog(Adw.Window):
         def on_found(found: HostFound) -> None:
             # First add the device to UI with basic info
             GLib.idle_add(self._on_scan_found_ui, str(found.ip), found.latency_ms)
-            # Then check pairing status and fetch device info in background
+            # Then fetch device info in background if it is already paired
             self._check_and_fetch_device_info(str(found.ip), found.latency_ms)
 
         def run() -> None:
@@ -252,7 +245,7 @@ class DeviceDialog(Adw.Window):
         self._scan_progress.set_fraction(frac)
         self._scan_progress.set_text(f"Scanning {scanned}/{total}")
 
-    def _on_scan_found_ui(self, ip: str, latency_ms: float, save: bool = True, model: str | None = None, version: str | None = None, device_name: str | None = None) -> None:
+    def _on_scan_found_ui(self, ip: str, latency_ms: float, save: bool = True, model: str | None = None, device_name: str | None = None) -> None:
         if ip in self._found_ips:
             return
         self._found_ips.add(ip)
@@ -261,34 +254,13 @@ class DeviceDialog(Adw.Window):
             device_data: dict[str, str | float | None] = {"ip": ip, "latency_ms": latency_ms}
             if model:
                 device_data["model"] = model
-            if version:
-                device_data["version"] = version
             if device_name:
                 device_data["device_name"] = device_name
             self._discovered_devices.append(device_data)
             self._save_discovered_devices()
 
-        # Create row with device info
-        # Title: device_name if available, otherwise IP
-        title = device_name if device_name else ip
-        
-        # Build subtitle based on available info
-        subtitle = f"Port 5555 open ({latency_ms:.0f} ms)"
-        if device_name and version:
-            subtitle = f"{ip} • Android {version} • {latency_ms:.0f} ms"
-        elif device_name:
-            subtitle = f"{ip} • {latency_ms:.0f} ms"
-        elif model and version:
-            subtitle = f"{model} • Android {version} • {latency_ms:.0f} ms"
-        elif model:
-            subtitle = f"{model} • {latency_ms:.0f} ms"
-        elif version:
-            subtitle = f"Android {version} • {latency_ms:.0f} ms"
-
-        row = Adw.ActionRow(
-            title=GLib.markup_escape_text(title),
-            subtitle=GLib.markup_escape_text(subtitle)
-        )
+        row = Adw.ActionRow()
+        self._set_row_text(row, ip, latency_ms, model, device_name)
 
         btn = Gtk.Button(label="Connect")
         btn.set_valign(Gtk.Align.CENTER)
@@ -300,238 +272,75 @@ class DeviceDialog(Adw.Window):
         self._device_list.append(row)
         self._device_rows[ip] = row
 
-    def _check_and_fetch_device_info(self, ip: str, latency_ms: float) -> None:
-        """Check if device is paired and fetch device info in background thread."""
-        def check_and_fetch() -> None:
-            try:
-                client = AdbTcpClient(ip, port=5555, timeout_s=2.0)
-                is_paired = client.is_paired_silent()
-                
-                if is_paired:
-                    # Device is paired, try to connect and get device info
-                    try:
-                        client.connect()
-                        info = client.get_device_info()
-                        client.disconnect()
-                        # Update UI with device info
-                        GLib.idle_add(
-                            self._update_device_row, 
-                            ip, 
-                            latency_ms, 
-                            info.model,
-                            info.version,
-                            f"{info.manufacturer} {info.model}"  # Device name
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        thread = threading.Thread(target=check_and_fetch, daemon=True)
-        thread.start()
-
-    def _update_device_row(self, ip: str, latency_ms: float, model: str | None, version: str | None, device_name: str | None) -> None:
-        """Update a device row with fetched device information."""
-        if ip not in self._device_rows:
-            return
-        
-        row = self._device_rows[ip]
-        
-        # Build new subtitle with device info (IP in subtitle since device_name is in title)
-        if device_name and version:
-            subtitle = f"{ip} • Android {version} • {latency_ms:.0f} ms"
-        elif device_name:
+    @staticmethod
+    def _set_row_text(row: Adw.ActionRow, ip: str, latency_ms: float, model: str | None, device_name: str | None) -> None:
+        # Title: device_name if available, otherwise IP
+        if device_name:
             subtitle = f"{ip} • {latency_ms:.0f} ms"
-        elif model and version:
-            subtitle = f"{model} • Android {version} • {latency_ms:.0f} ms"
         elif model:
             subtitle = f"{model} • {latency_ms:.0f} ms"
         else:
-            return  # No new info to display
-        
-        # Update the row
+            subtitle = f"Remote service found ({latency_ms:.0f} ms), not paired yet"
         row.set_title(GLib.markup_escape_text(device_name or ip))
         row.set_subtitle(GLib.markup_escape_text(subtitle))
-        
+
+    def _check_and_fetch_device_info(self, ip: str, latency_ms: float) -> None:
+        """Fetch device info in a background thread if the TV already trusts us."""
+        def check_and_fetch() -> None:
+            info = probe_paired_device(ip, timeout_s=2.0)
+            if info:
+                GLib.idle_add(self._update_device_row, ip, latency_ms, info.model, f"{info.manufacturer} {info.model}")
+
+        threading.Thread(target=check_and_fetch, daemon=True).start()
+
+    def _update_device_row(self, ip: str, latency_ms: float, model: str | None, device_name: str | None) -> None:
+        """Update a device row with fetched device information."""
+        row = self._device_rows.get(ip)
+        if not row:
+            return
+        self._set_row_text(row, ip, latency_ms, model, device_name)
+
         # Update saved data
         for device in self._discovered_devices:
             if device.get("ip") == ip:
                 device["model"] = model
-                device["version"] = version
                 device["device_name"] = device_name
                 break
         self._save_discovered_devices()
 
-    def _fetch_device_info_after_pairing(self, ip: str) -> None:
-        """Fetch device info after successful pairing and update the row."""
-        def fetch_info() -> None:
-            try:
-                client = AdbTcpClient(ip, port=5555, timeout_s=3.0)
-                client.connect()
-                info = client.get_device_info()
-                client.disconnect()
-                
-                device_name = f"{info.manufacturer} {info.model}"
-                
-                # Find latency from discovered devices
-                latency_ms = 0.0
-                for device in self._discovered_devices:
-                    if device.get("ip") == ip:
-                        latency_ms = device.get("latency_ms", 0.0)
-                        break
-                
-                # Update UI
-                GLib.idle_add(
-                    self._update_device_row,
-                    ip,
-                    latency_ms,
-                    info.model,
-                    info.version,
-                    device_name
-                )
-            except Exception:
-                pass
-
-        thread = threading.Thread(target=fetch_info, daemon=True)
-        thread.start()
-
-
     def _connect_from_row(self, ip: str, btn: Gtk.Button) -> None:
-        self._start_pairing_check(ip, btn)
+        self._start_connect(ip, btn)
 
-    def _start_pairing_check(self, ip: str, btn: Gtk.Button) -> None:
-        """Start the pairing check flow for the given IP."""
-        if self._pairing_in_progress:
-            self._parent._toast("Already pairing with another device")
+    def _start_connect(self, ip: str, btn: Gtk.Button) -> None:
+        """Connect to the TV, pairing first if it asks for it."""
+        if self._connect_in_progress:
+            self._parent._toast("Already connecting to another device")
             return
 
-        self._pairing_in_progress = True
-        self._pairing_ip = ip
-        self._pairing_button = btn
-
-        # Change button to "Pairing" state
-        btn.set_label("Pairing")
+        self._connect_in_progress = True
+        btn.set_label("Connecting")
         btn.set_sensitive(False)
         btn.remove_css_class("suggested-action")
         btn.add_css_class("accent")
 
-        # First, trigger a connection attempt to show the pairing dialog on the TV
-        def trigger_connection() -> None:
-            try:
-                client = AdbTcpClient(ip, port=5555, timeout_s=2.0)
-                client.connect()
-            except Exception:
-                # Connection will fail if not paired, that's expected
-                pass
-            # Start the pairing status checks after attempting connection
-            GLib.idle_add(self._start_pairing_timer)
-
-        thread = threading.Thread(target=trigger_connection, daemon=True)
-        thread.start()
-
-    def _start_pairing_timer(self) -> None:
-        """Start the periodic pairing status timer."""
-        if not self._pairing_in_progress:
-            return
-        # Start checking pairing status every 1.5 seconds
-        self._pairing_timer_id = GLib.timeout_add(1500, self._check_pairing_status)
-        # Also do an immediate check
-        self._check_pairing_status()
-
-    def _check_pairing_status(self) -> bool:
-        """Check if the device is paired. Called periodically."""
-        if not self._pairing_in_progress or not self._pairing_ip:
-            return False  # Stop the timer
-
-        ip = self._pairing_ip
-
-        def check_paired() -> None:
-            try:
-                client = AdbTcpClient(ip, port=5555, timeout_s=2.0)
-                is_paired = client.is_paired_silent()
-            except Exception:
-                is_paired = False
-
-            GLib.idle_add(self._on_pairing_check_result, is_paired)
-
-        thread = threading.Thread(target=check_paired, daemon=True)
-        thread.start()
-
-        return True  # Continue the timer
-
-    def _on_pairing_check_result(self, is_paired: bool) -> None:
-        """Handle the result of a pairing check."""
-        if not self._pairing_in_progress:
-            return
-
-        if is_paired:
-            self._on_pairing_complete()
-
-    def _on_pairing_complete(self) -> None:
-        """Called when the device is successfully paired."""
-        if not self._pairing_button or not self._pairing_ip:
-            return
-
-        # Stop the timer
-        if self._pairing_timer_id:
-            GLib.source_remove(self._pairing_timer_id)
-            self._pairing_timer_id = None
-
-        # Update button to "Paired" state
-        self._pairing_button.set_label("Paired")
-        self._pairing_button.remove_css_class("accent")
-        self._pairing_button.add_css_class("success")
-
-        # Fetch device info now that we're paired
-        ip = self._pairing_ip
-        self._fetch_device_info_after_pairing(ip)
-
-        # Connect silently in the background
-        
-        def on_connect_done() -> None:
-            # Close the dialog when connection is established
-            # We need to check if the device is actually connected
-            if self._parent._adb and self._parent._adb.connected:
+        def on_done(success: bool) -> None:
+            self._connect_in_progress = False
+            btn.set_label("Connect")
+            btn.set_sensitive(True)
+            btn.remove_css_class("accent")
+            btn.add_css_class("suggested-action")
+            if success:
+                remote = self._parent._remote
+                if remote and remote.device_info:
+                    info = remote.device_info
+                    latency_ms = next(
+                        (float(d.get("latency_ms") or 0.0) for d in self._discovered_devices if d.get("ip") == ip),
+                        0.0,
+                    )
+                    self._update_device_row(ip, latency_ms, info.model, f"{info.manufacturer} {info.model}")
                 self.close()
-            else:
-                # If connection failed, reset the button
-                self._reset_pairing_state()
 
-        # Use _connect_ip with silent=True
-        self._parent._connect_ip(ip, silent=True)
-        
-        # Monitor connection status - check every 1 second for up to 10 seconds
-        self._connection_check_count = 0
-        
-        def check_connection() -> bool:
-            self._connection_check_count += 1
-            if self._parent._adb and self._parent._adb.connected:
-                self._reset_pairing_state()
-                self.close()
-                return False
-            if self._connection_check_count >= 10:  # 10 seconds timeout
-                self._reset_pairing_state()
-                return False
-            return True
-        
-        GLib.timeout_add(1000, check_connection)
-
-    def _reset_pairing_state(self) -> None:
-        """Reset the pairing state to allow new pairing attempts."""
-        if self._pairing_timer_id:
-            GLib.source_remove(self._pairing_timer_id)
-            self._pairing_timer_id = None
-
-        if self._pairing_button:
-            self._pairing_button.set_label("Connect")
-            self._pairing_button.set_sensitive(True)
-            self._pairing_button.remove_css_class("accent")
-            self._pairing_button.remove_css_class("success")
-            self._pairing_button.add_css_class("suggested-action")
-
-        self._pairing_in_progress = False
-        self._pairing_ip = None
-        self._pairing_button = None
+        self._parent._connect_ip(ip, on_done=on_done, dialog_parent=self)
 
     def _on_scan_finished_ui(self, cancelled: bool) -> None:
         self._set_scanning(False)
@@ -541,6 +350,3 @@ class DeviceDialog(Adw.Window):
             self._parent._toast("Scan stopped")
         else:
             self._parent._toast(f"Scan finished ({len(self._found_ips)} found)")
-
-
-

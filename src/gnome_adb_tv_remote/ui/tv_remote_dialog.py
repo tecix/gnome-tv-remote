@@ -3,7 +3,8 @@ TV Remote Dialog for controlling external TV device.
 
 This module provides the TvRemoteDialog class, a modal dialog that displays
 a d-pad interface for controlling a separate TV device when the Input button
-is used with an external TV IP configured. Uses scrcpy for fast command delivery.
+is used with an external TV IP configured. Commands go over its own remote
+connection to that TV.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .preferences_dialog import get_action_tooltip, _load_shortcuts_dict  # noqa: E402
 from .ui_utils import create_icon, flash_button  # noqa: E402
-from ..core.adb_client import DeviceInfo  # noqa: E402
+from ..core.remote_v2 import AndroidTvRemote, DeviceInfo  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,9 @@ DPAD_KEYCODES = {
 
 
 class TvRemoteDialog(Adw.Window):
-    """Modal dialog for controlling external TV device with d-pad via scrcpy."""
+    """Modal dialog for controlling external TV device with d-pad."""
 
-    def __init__(self, parent: Gtk.Window, tv_ip: str, settings: Gio.Settings, tv_scrcpy=None, tv_device_info: DeviceInfo | None = None) -> None:
+    def __init__(self, parent: Gtk.Window, tv_ip: str, settings: Gio.Settings, tv_remote: AndroidTvRemote | None = None, tv_device_info: DeviceInfo | None = None) -> None:
         super().__init__(
             transient_for=parent,
             modal=True,
@@ -61,7 +62,7 @@ class TvRemoteDialog(Adw.Window):
         
         self._tv_ip = tv_ip
         self._settings = settings
-        self._tv_scrcpy = tv_scrcpy  # ScrcpyServerController for fast commands
+        self._tv_remote = tv_remote  # Connection to the TV
         self._tv_device_info = tv_device_info  # Device info for display
         self._key_map: dict[int, str] = {}
         self._title_widget: Adw.WindowTitle | None = None
@@ -70,8 +71,8 @@ class TvRemoteDialog(Adw.Window):
         self._build_ui()
         self._load_dpad_shortcuts()
         
-        # Send Input command immediately via scrcpy
-        if self._tv_scrcpy and self._tv_scrcpy.connected:
+        # Send Input command immediately
+        if self._tv_remote and self._tv_remote.connected:
             self._send_input_command_to_tv()
         
         # Add keyboard controller for shortcuts and Escape
@@ -186,24 +187,24 @@ class TvRemoteDialog(Adw.Window):
                     button.set_tooltip_text(label)
 
     def _send_input_command_to_tv(self) -> None:
-        """Send KEYCODE_TV_INPUT command to TV device via scrcpy."""
-        if not self._tv_scrcpy or not self._tv_scrcpy.connected:
+        """Send KEYCODE_TV_INPUT command to TV device."""
+        if not self._tv_remote or not self._tv_remote.connected:
             return
         
         try:
-            self._tv_scrcpy.send_keycode("KEYCODE_TV_INPUT")
+            self._tv_remote.send_keycode("KEYCODE_TV_INPUT")
         except Exception as e:
-            logger.error(f"Failed to send Input command via scrcpy: {e}")
+            logger.error(f"Failed to send Input command: {e}")
 
     def _send_keycode_to_tv(self, keycode: str) -> None:
-        """Send keycode to TV device via scrcpy."""
-        if not self._tv_scrcpy or not self._tv_scrcpy.connected:
+        """Send keycode to TV device."""
+        if not self._tv_remote or not self._tv_remote.connected:
             return
         
         try:
-            self._tv_scrcpy.send_keycode(keycode)
+            self._tv_remote.send_keycode(keycode)
         except Exception as e:
-            logger.error(f"Failed to send keycode {keycode} via scrcpy: {e}")
+            logger.error(f"Failed to send keycode {keycode}: {e}")
 
     def _flash_button(self, keycode: str) -> None:
         """Flash the button corresponding to the keycode."""

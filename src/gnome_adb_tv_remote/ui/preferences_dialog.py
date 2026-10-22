@@ -19,6 +19,14 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
+from ..core.home_assistant import (  # noqa: E402
+    DEFAULT_ENTITY,
+    HomeAssistantError,
+    HomeAssistantRemote,
+    load_token,
+    save_token,
+)
+
 
 # Default keyboard shortcuts mapping: action -> list of Gdk key names
 DEFAULT_SHORTCUTS: dict[str, list[str]] = {
@@ -44,6 +52,7 @@ DEFAULT_SHORTCUTS: dict[str, list[str]] = {
     "focus-keyboard": ["Tab"],
     "search": ["f"],
     "notifications": ["n"],
+    "toggle-home-assistant": ["grave"],
 }
 
 # Action to ADB keycode mapping
@@ -70,6 +79,7 @@ ACTION_TO_KEYCODE: dict[str, str] = {
     "focus-keyboard": None,  # Special action, not an ADB keycode
     "search": None,  # Special action, sends text "s" instead of keycode
     "notifications": None,  # Special action, expands notification panel
+    "toggle-home-assistant": None,  # Special action, switches the button route
 }
 
 # Human-readable action names
@@ -96,6 +106,7 @@ ACTION_LABELS: dict[str, str] = {
     "focus-keyboard": "Focus Keyboard",
     "search": "Find (YouTube)",
     "notifications": "Notifications",
+    "toggle-home-assistant": "Switch Direct / Home Assistant",
 }
 
 ACTION_CATEGORIES: dict[str, list[str]] = {
@@ -104,7 +115,7 @@ ACTION_CATEGORIES: dict[str, list[str]] = {
     "Volume": ["volume-up", "volume-down", "volume-mute"],
     "Media": ["play-pause", "previous", "next"],
     "TV Controls": ["power", "captions", "tv-input", "notifications"],
-    "Other": ["focus-keyboard", "search"],
+    "Other": ["focus-keyboard", "search", "toggle-home-assistant"],
 }
 
 
@@ -346,6 +357,8 @@ class PreferencesDialog(Adw.Dialog):
         tv_ip_row.add_suffix(tv_ip_entry)
         tv_ip_group.add(tv_ip_row)
 
+        content.append(self._build_home_assistant_group())
+
         # Create preference groups for each category
         for category, actions in ACTION_CATEGORIES.items():
             group = Adw.PreferencesGroup(title=GLib.markup_escape_text(category))
@@ -373,6 +386,77 @@ class PreferencesDialog(Adw.Dialog):
                 row.add_suffix(reset_action_btn)
 
                 group.add(row)
+
+    def _build_home_assistant_group(self) -> Adw.PreferencesGroup:
+        """Settings for sending buttons through Home Assistant's ADB integration."""
+        group = Adw.PreferencesGroup(
+            title="Home Assistant",
+            description=(
+                "Buttons can go through Home Assistant's Android Debug Bridge integration instead, "
+                "for screens the TV's remote service can't control. Switch with the header's HA "
+                "button or its shortcut."
+            ),
+        )
+
+        url_row = Adw.EntryRow(title="URL (e.g. https://ha.example.com)")
+        url_row.set_text(self._settings.get_string("home-assistant-url"))
+        url_row.set_input_purpose(Gtk.InputPurpose.URL)
+        url_row.set_show_apply_button(True)
+        url_row.connect("apply", lambda row: self._apply_home_assistant(url=row.get_text().strip()))
+        group.add(url_row)
+
+        token_row = Adw.PasswordEntryRow(title="Long-lived access token")
+        token_row.set_text(load_token())
+        token_row.set_show_apply_button(True)
+        token_row.connect("apply", lambda row: self._apply_home_assistant(token=row.get_text().strip()))
+        group.add(token_row)
+
+        entity_row = Adw.EntryRow(title=f"Remote entity (default {DEFAULT_ENTITY})")
+        entity_row.set_text(self._settings.get_string("home-assistant-entity"))
+        entity_row.set_show_apply_button(True)
+        entity_row.connect("apply", lambda row: self._apply_home_assistant(entity=row.get_text().strip()))
+        group.add(entity_row)
+
+        self._ha_test_row = Adw.ActionRow(title="Connection", subtitle="Not tested")
+        test_btn = Gtk.Button(label="Test")
+        test_btn.set_valign(Gtk.Align.CENTER)
+        test_btn.connect("clicked", self._on_test_home_assistant)
+        self._ha_test_row.add_suffix(test_btn)
+        group.add(self._ha_test_row)
+        return group
+
+    def _apply_home_assistant(self, *, url: str | None = None, token: str | None = None, entity: str | None = None) -> None:
+        if url is not None:
+            self._settings.set_string("home-assistant-url", url)
+        if token is not None:
+            save_token(token)
+        if entity is not None:
+            self._settings.set_string("home-assistant-entity", entity or DEFAULT_ENTITY)
+        if hasattr(self._parent, "reload_home_assistant"):
+            self._parent.reload_home_assistant()
+        self._ha_test_row.set_subtitle("Saved, not tested")
+
+    def _on_test_home_assistant(self, btn: Gtk.Button) -> None:
+        try:
+            ha = HomeAssistantRemote(
+                self._settings.get_string("home-assistant-url"),
+                load_token(),
+                self._settings.get_string("home-assistant-entity"),
+            )
+        except HomeAssistantError as e:
+            self._ha_test_row.set_subtitle(str(e))
+            return
+
+        btn.set_sensitive(False)
+        self._ha_test_row.set_subtitle("Testing…")
+
+        def show(name: str | None, error: str | None) -> bool:
+            btn.set_sensitive(True)
+            self._ha_test_row.set_subtitle(f"OK: {name}" if name else (error or "Failed"))
+            return False
+
+        ha.check_async(lambda name, error: GLib.idle_add(show, name, error))
+        ha.close()
 
     def _on_shortcut_changed(self, action: str, key_names: list[str]) -> None:
         """Called when a shortcut is changed."""
@@ -442,6 +526,17 @@ def get_notifications_keys(settings: Gio.Settings) -> list[int]:
     shortcuts = _load_shortcuts_dict(settings)
     keyvals = []
     for key_name in shortcuts.get("notifications", []):
+        keyval = gdk_name_to_keyval(key_name)
+        if keyval is not None:
+            keyvals.append(keyval)
+    return keyvals
+
+
+def get_toggle_home_assistant_keys(settings: Gio.Settings) -> list[int]:
+    """Get the Gdk keyvals for the toggle-home-assistant action."""
+    shortcuts = _load_shortcuts_dict(settings)
+    keyvals = []
+    for key_name in shortcuts.get("toggle-home-assistant", []):
         keyval = gdk_name_to_keyval(key_name)
         if keyval is not None:
             keyvals.append(keyval)

@@ -53,6 +53,21 @@
       <summary>TV device model</summary>
       <description>The model name of the TV device for Input button routing. Used for verification during auto-connect.</description>
     </key>
+    <key name="home-assistant-mode" type="b">
+      <default>false</default>
+      <summary>Send buttons through Home Assistant</summary>
+      <description>When enabled, buttons are sent through Home Assistant's Android Debug Bridge integration instead of the Android TV Remote protocol.</description>
+    </key>
+    <key name="home-assistant-url" type="s">
+      <default>''</default>
+      <summary>Home Assistant URL</summary>
+      <description>Base URL of the Home Assistant instance, e.g. https://ha.example.com or http://192.168.1.10:8123. The access token is stored separately in the config directory.</description>
+    </key>
+    <key name="home-assistant-entity" type="s">
+      <default>'remote.living_room_philips_tv'</default>
+      <summary>Home Assistant remote entity</summary>
+      <description>The remote entity of the TV's Android Debug Bridge integration that receives the commands.</description>
+    </key>
   </schema>
 </schemalist>
 

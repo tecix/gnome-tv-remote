@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.erenseymen.android-tv-remote</id>
   <name>TV Remote</name>
-  <summary>Control an Android TV over the network via ADB</summary>
+  <summary>Control an Android TV or Google TV over the network</summary>
   
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -15,13 +15,13 @@
     <p>
       TV Remote is a modern GNOME application that lets you control your Android TV 
       from your Linux desktop. It discovers Android TV devices on your local network, 
-      connects via ADB (Android Debug Bridge), and provides an intuitive remote control 
-      interface.
+      pairs with them using the same remote protocol as the Google TV phone app, and 
+      provides an intuitive remote control interface.
     </p>
     <p>Features:</p>
     <ul>
       <li>Automatic network scanning to discover Android TV devices</li>
-      <li>Low-latency input (35-70ms) using scrcpy-server technology</li>
+      <li>No developer options or ADB needed: pair once with the code shown on the TV</li>
       <li>Full D-pad navigation, volume controls, and media buttons</li>
       <li>Keyboard shortcuts for all remote functions</li>
       <li>Text input for searching and typing on your TV</li>
@@ -29,9 +29,8 @@
       <li>Native GNOME/Libadwaita design following HIG</li>
     </ul>
     <p>
-      Setup: Enable Developer options and USB/Wireless debugging on your TV, 
-      ensure ADB over network is enabled on port 5555, and accept the authorization 
-      prompt on first connection.
+      Setup: Make sure the TV and this computer are on the same network, then connect 
+      and type the pairing code that appears on the TV.
     </p>
   </description>
   
@@ -68,7 +67,7 @@
     <keyword>Android</keyword>
     <keyword>TV</keyword>
     <keyword>Remote</keyword>
-    <keyword>ADB</keyword>
+    <keyword>Google TV</keyword>
     <keyword>Control</keyword>
   </keywords>
   
