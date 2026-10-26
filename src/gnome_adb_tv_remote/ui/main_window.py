@@ -48,6 +48,7 @@ from .preferences_dialog import (  # noqa: E402
 from .remote_panel import RemotePanel  # noqa: E402
 from .info_dialog import InfoDialog  # noqa: E402
 from .tv_remote_dialog import TvRemoteDialog  # noqa: E402
+from .airplay_dialog import AirPlayDialog  # noqa: E402
 from ..core.mpris_service import MprisService  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._preferences_dialog: PreferencesDialog | None = None
         self._info_dialog: InfoDialog | None = None
         self._tv_remote_dialog: TvRemoteDialog | None = None
+        self._airplay_dialog: AirPlayDialog | None = None
         self._tv_device_info: DeviceInfo | None = None
         self._tv_remote_required: bool = False  # True when the TV connection is needed but not yet up
         self._ip_discovery_in_progress: bool = False  # Flag to prevent reconnect loop during IP discovery
@@ -271,6 +273,12 @@ class MainWindow(Adw.ApplicationWindow):
         prefs_btn.connect("clicked", self._on_preferences_clicked)
         header.pack_end(prefs_btn)
 
+        # AirPlay: send a video link (and subtitles) to the TV
+        airplay_btn = Gtk.Button(icon_name="send-to-symbolic")
+        airplay_btn.set_tooltip_text("Play a video link on the TV (AirPlay)")
+        airplay_btn.connect("clicked", self._on_airplay_clicked)
+        header.pack_end(airplay_btn)
+
         # Content (remote)
         self._remote_panel = RemotePanel()
         toolbar_view.set_content(self._remote_panel)
@@ -296,6 +304,15 @@ class MainWindow(Adw.ApplicationWindow):
         if self._preferences_dialog is None:
             self._preferences_dialog = PreferencesDialog(self)
         self._preferences_dialog.present(self)
+
+    def _on_airplay_clicked(self, *_args) -> None:
+        if self._airplay_dialog is None:
+            # Empty receiver setting means the connected device (TinyTV runs its receiver there)
+            self._airplay_dialog = AirPlayDialog(
+                self._settings,
+                lambda: self._connected_ip or self._settings.get_string("last-connected-ip") or None,
+            )
+        self._airplay_dialog.open(self)
 
     def _on_info_clicked(self, *_args) -> None:
         if self._info_dialog is None:

@@ -68,6 +68,21 @@
       <summary>Home Assistant remote entity</summary>
       <description>The remote entity of the TV's Android Debug Bridge integration that receives the commands.</description>
     </key>
+    <key name="airplay-receiver" type="s">
+      <default>''</default>
+      <summary>AirPlay receiver address</summary>
+      <description>Host or host:port of the AirPlay video receiver (TinyTV Receiver listens on port 7000). Empty means the connected device.</description>
+    </key>
+    <key name="airplay-video-url" type="s">
+      <default>''</default>
+      <summary>Last AirPlay video link</summary>
+      <description>The video link last sent over AirPlay, shown again when the AirPlay dialog opens.</description>
+    </key>
+    <key name="airplay-subtitle-url" type="s">
+      <default>''</default>
+      <summary>Last AirPlay subtitle link</summary>
+      <description>The subtitle link last sent over AirPlay, shown again when the AirPlay dialog opens.</description>
+    </key>
   </schema>
 </schemalist>
 
