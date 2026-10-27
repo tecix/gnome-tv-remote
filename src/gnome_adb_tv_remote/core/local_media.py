@@ -24,6 +24,7 @@ DEFAULT_CAPS = {
     "avc": {"maxWidth": 1920, "maxHeight": 1088, "maxFps": 60},
     "hevc": {"maxWidth": 3840, "maxHeight": 2160, "maxFps": 60, "rotate": False},
 }
+_CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
 
 @dataclass
@@ -99,9 +100,93 @@ def probe_file(path: Path) -> MediaInfo:
     )
 
 
-def ffmpeg_args(path: Path, output: Path, info: MediaInfo, encoder: str) -> list[str]:
-    """Build explicit rotation and aspect preserving MPEG-TS EVENT HLS argv."""
+def detect_letterbox(path: Path, info: MediaInfo) -> tuple[int, int, int, int] | None:
+    """Return a stable embedded 16:9 crop, or None when framing is uncertain."""
+    display_width, display_height = info.width, info.height
+    if info.rotation in (90, 270):
+        display_width, display_height = display_height, display_width
+    if info.duration < 5 or display_width <= 0 or display_height <= 0:
+        return None
+    if not 1.20 <= display_width / display_height < 1.60:
+        return None
+
+    # A few keyframe-seeked samples avoid mistaking a single black scene or fade
+    # for letterboxing. Only crop when the same box is present throughout.
+    crops: list[tuple[int, int, int, int]] = []
+    for fraction in (0.1, 0.3, 0.5, 0.7, 0.9):
+        timestamp = max(1.0, min(info.duration - 1.0, info.duration * fraction))
+        try:
+            result = subprocess.run(
+                [
+                    media_binary("ffmpeg"),
+                    "-hide_banner",
+                    "-loglevel",
+                    "info",
+                    "-ss",
+                    f"{timestamp:.3f}",
+                    "-noautorotate",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "5",
+                    "-vf",
+                    "cropdetect=limit=24:round=2:reset=0",
+                    "-an",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=True,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        matches = _CROP_RE.findall(result.stderr)
+        if matches:
+            crops.append(tuple(map(int, matches[-1])))
+
+    if len(crops) != 5:
+        return None
+    reference = crops[0]
+    cluster = [
+        crop for crop in crops if all(abs(a - b) <= 8 for a, b in zip(crop, reference))
+    ]
+    if len(cluster) < 4:
+        return None
+
+    crop_box = tuple(
+        round(sorted(crop[index] for crop in cluster)[len(cluster) // 2] / 2) * 2
+        for index in range(4)
+    )
+    width, height, x, y = crop_box
+    if width <= 0 or height <= 0 or (width, height) == (info.width, info.height):
+        return None
+    if (
+        (info.width - width) < info.width * 0.02
+        and (info.height - height) < info.height * 0.02
+    ):
+        return None
+    if info.rotation in (90, 270):
+        width, height = height, width
+    ratio = width / height
+    if not 1.60 <= ratio <= 1.90:
+        return None
+    return crop_box  # coded-frame coordinates; apply before rotation
+
+
+def ffmpeg_args(
+    path: Path,
+    output: Path,
+    info: MediaInfo,
+    encoder: str,
+    crop: tuple[int, int, int, int] | None = None,
+) -> list[str]:
+    """Build crop-aware, rotation-aware MPEG-TS EVENT HLS FFmpeg arguments."""
     width, height = info.width, info.height
+    if crop is not None:
+        width, height = crop[:2]
     if info.rotation in (90, 270):
         width, height = height, width
     ratio = min(1920 / width, 1080 / height, 1)
@@ -149,21 +234,48 @@ def ffmpeg_args(path: Path, output: Path, info: MediaInfo, encoder: str) -> list
             180: "vpp_qsv=transpose=clock,vpp_qsv=transpose=clock",
             270: "vpp_qsv=transpose=cclock",
         }.get(info.rotation, "")
-        filters = [rotation, f"vpp_qsv=w={width}:h={height}:format=nv12", f"fps={fps}", "setsar=1"]
+        crop_filter = (
+            f"vpp_qsv=cw={crop[0]}:ch={crop[1]}:cx={crop[2]}:cy={crop[3]}" if crop else ""
+        )
+        filters = [
+            crop_filter,
+            rotation,
+            f"vpp_qsv=w={width}:h={height}:format=nv12",
+            f"fps={fps}",
+            "setsar=1",
+        ]
     elif encoder == "h264_vaapi":
         rotation = {
             90: "transpose_vaapi=dir=clock",
             180: "transpose_vaapi=dir=reversal",
             270: "transpose_vaapi=dir=cclock",
         }.get(info.rotation, "")
-        filters = [
+        crop_filters = (
+            [
+                "hwdownload",
+                "format=nv12",
+                f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}",
+                "hwupload",
+            ]
+            if crop
+            else []
+        )
+        filters = crop_filters + [
             rotation,
             f"scale_vaapi=w={width}:h={height}:format=nv12",
             f"fps={fps}",
             "setsar=1",
         ]
     else:
-        filters = [rotation, f"scale={width}:{height}", f"fps={fps}", "setsar=1", "format=yuv420p"]
+        crop_filter = f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}" if crop else ""
+        filters = [
+            crop_filter,
+            rotation,
+            f"scale={width}:{height}",
+            f"fps={fps}",
+            "setsar=1",
+            "format=yuv420p",
+        ]
     args += ["-vf", ",".join(f for f in filters if f), "-c:v", encoder]
     if encoder == "h264_qsv":
         # HLS boundaries require IDRs, including beyond the first QSV GOPs.
@@ -353,7 +465,8 @@ class MediaSession:
             cache.mkdir(parents=True, exist_ok=True)
             self.directory = Path(tempfile.mkdtemp(prefix="airplay-", dir=cache))
             directory = self.directory
-        transcode = needs_transcode(info, caps)
+        crop = detect_letterbox(path, info)
+        transcode = needs_transcode(info, caps) or crop is not None
         if transcode:
             errors = []
             for encoder in encoder_candidates():
@@ -365,7 +478,7 @@ class MediaSession:
                         item.unlink()
                     with (directory / "encoder.log").open("wb") as log:
                         self.process = subprocess.Popen(
-                            ffmpeg_args(path, directory, info, encoder),
+                            ffmpeg_args(path, directory, info, encoder, crop),
                             stdout=subprocess.DEVNULL,
                             stderr=log,
                         )
