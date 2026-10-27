@@ -11,6 +11,7 @@ GLib.idle_add.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
 import threading
@@ -33,7 +34,8 @@ from ..core.airplay import (  # noqa: E402
     parse_receiver,
 )
 
-from ..core.local_media import MediaSession
+from ..core.local_media import MediaInfo, MediaSession, needs_transcode, probe_file
+from .local_video_group import LocalVideoGroup
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,8 @@ class AirPlayDialog(Adw.Dialog):
 
     def __init__(self, settings: Gio.Settings, default_host: Callable[[], str | None]) -> None:
         super().__init__()
+        self._selected_local: Path | None = None
+        self._selection_generation = 0
         self._local_session: MediaSession | None = None
         self._local_client: AirPlayClient | None = None
         self._local_generation = 0
@@ -83,7 +87,7 @@ class AirPlayDialog(Adw.Dialog):
 
         self.set_title("AirPlay")
         self.set_content_width(460)
-        self.set_content_height(720)
+        self.set_content_height(820)
         self._build_ui()
         self.connect(
             "closed", lambda *_: (self._stop_polling(), self._close_local(stop_receiver=True))
@@ -130,22 +134,19 @@ class AirPlayDialog(Adw.Dialog):
         self._subtitle_row = self._link_row("Subtitle link (optional)", "airplay-subtitle-url")
         media_group.add(self._video_row)
         media_group.add(self._subtitle_row)
-        local_button = Gtk.Button(label="Play a local file…")
-        local_button.connect("clicked", self._choose_local_file)
-        media_group.add(local_button)
-        self._local_state = Adw.ActionRow(
-            title="Local video", subtitle="Original or converted automatically for this TV"
+        page.add(media_group)
+        self._local_group = LocalVideoGroup(
+            self._choose_local_file, self._clear_local_file, self._drop_local_file
         )
-        media_group.add(self._local_state)
-
-        self._play_button = Gtk.Button(label="Play on TV")
+        page.add(self._local_group)
+        self._play_button = Gtk.Button.new_with_mnemonic("_Play on TV")
         self._play_button.add_css_class("suggested-action")
         self._play_button.add_css_class("pill")
         self._play_button.set_halign(Gtk.Align.CENTER)
-        self._play_button.set_margin_top(18)
         self._play_button.connect("clicked", self._on_play_clicked)
-        media_group.add(self._play_button)
-        page.add(media_group)
+        play_bar = Gtk.ActionBar()
+        play_bar.set_center_widget(self._play_button)
+        toolbar_view.add_bottom_bar(play_bar)
 
         tv_group = Adw.PreferencesGroup(title="On the TV")
         self._status_row = Adw.ActionRow(title="Not checked yet")
@@ -320,7 +321,8 @@ class AirPlayDialog(Adw.Dialog):
         generation = self._local_generation
         client, self._local_client = self._local_client, None
         if session:
-            self._local_state.set_subtitle("Local playback stopped")
+            self._local_group.set_state("direct", message="Choose Play on TV to start again")
+            self._local_group.status_row.set_title("Local playback stopped")
             session.cancelled.set()
 
             def cleanup() -> None:
@@ -344,29 +346,168 @@ class AirPlayDialog(Adw.Dialog):
                 file = dialog.open_finish(result)
                 path = file.get_path()
                 if path:
-                    self._play_local(Path(path))
+                    self._select_local_file(Path(path))
             except GLib.Error:
                 pass
 
         chooser.open(self.get_root(), None, selected)
+
+    @staticmethod
+    def _local_metadata(info: MediaInfo) -> str:
+        codec = {"avc": "H.264", "hevc": "HEVC"}.get(info.codec, info.codec.upper())
+        parts = [codec, f"{info.width}×{info.height}"]
+        if info.rotation in (90, 270):
+            parts.append("portrait" if info.width > info.height else "landscape")
+        if info.duration > 0:
+            parts.append(_format_time(info.duration))
+        if needs_transcode(info):
+            parts.append("converts for TV")
+        return " · ".join(parts)
+
+    def _clear_local_file(self, *_args: Any) -> None:
+        self._close_local(stop_receiver=True)
+        self._selection_generation += 1
+        self._selected_local = None
+        self._local_group.set_state("idle", filename="", metadata="Or drop a video file here")
+
+    def _drop_local_file(self, file: Gio.File) -> bool:
+        path = file.get_path()
+        if not path:
+            return False
+        self._select_local_file(Path(path))
+        return True
+
+    def _local_error(self, message: str, retry: Callable[[], None]) -> None:
+        self._local_group.set_state("error", message=message)
+        toast = Adw.Toast(title=message, button_label="Retry")
+        toast.connect("button-clicked", lambda *_: retry())
+        self._toast_overlay.add_toast(toast)
+
+    def _select_local_file(self, path: Path) -> None:
+        self._close_local(stop_receiver=True)
+        self._selection_generation += 1
+        generation = self._selection_generation
+        self._selected_local = path
+        self._local_group.set_state(
+            "probing", filename=path.name, metadata="Reading video details…"
+        )
+
+        def report(info: MediaInfo | None, error: str | None) -> bool:
+            if generation != self._selection_generation:
+                return False
+            if error:
+                self._local_error(error, lambda: self._select_local_file(path))
+            elif info:
+                converts = needs_transcode(info)
+                self._local_group.set_state(
+                    "direct",
+                    metadata=self._local_metadata(info),
+                    message="Will convert for this TV" if converts else "Ready to play unchanged",
+                )
+                if converts:
+                    self._local_group.status_row.set_title("Converts for TV")
+            return False
+
+        def worker() -> None:
+            try:
+                info = probe_file(path)
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                StopIteration,
+                subprocess.SubprocessError,
+            ) as error:
+                GLib.idle_add(report, None, str(error) or "No readable video track was found")
+            else:
+                GLib.idle_add(report, info, None)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _play_local(self, path: Path) -> None:
         """Probe, convert when needed, and send on a worker thread."""
         if self._client() is None:
             self._toast("Enter the receiver's address")
             return
+        self._selection_generation += 1
         previous = self._close_local()
         generation = self._local_generation
         session = MediaSession()
         self._local_session = session
         self._local_client = self._client()
         self._sent_video = path.name
-        self._local_state.set_subtitle("Preparing local video…")
+        self._local_group.set_state(
+            "probing", filename=path.name, metadata="Reading video details…"
+        )
+
+        completed = False
+        encoder_name: str | None = None
+        playing_on_tv = False
+        conversion_fraction: float | None = None
 
         def progress(message: str) -> None:
             def update() -> bool:
-                if generation == self._local_generation:
-                    self._local_state.set_subtitle(message)
+                nonlocal completed, encoder_name, playing_on_tv, conversion_fraction
+                if generation != self._local_generation:
+                    return False
+                info = session.info
+                if info:
+                    self._local_group.file_row.set_subtitle(self._local_metadata(info))
+                if message.startswith("Conversion failed"):
+                    self._local_error(message, lambda: self._play_local(path))
+                elif message.startswith("Conversion complete"):
+                    self._local_group.set_state(
+                        "playing",
+                        message=f"Playing on {self._local_client.label if self._local_client else 'TV'}",
+                    )
+                    if not completed:
+                        self._toast("Video conversion complete")
+                        completed = True
+                elif (
+                    message.startswith(("Converting", "Converted"))
+                    or "converting in background" in message
+                ):
+                    encoder_match = re.search(r"Converting for TV \(([^)]+)\)", message)
+                    if encoder_match:
+                        encoder_name = encoder_match.group(1)
+                        conversion_fraction = None
+                    fraction = conversion_fraction
+                    match = re.search(r"Converted (\d+):(\d+):(\d+)", message)
+                    if match and info and info.duration > 0:
+                        h, m, sec = map(int, match.groups())
+                        fraction = min(1, (h * 3600 + m * 60 + sec) / info.duration)
+                        conversion_fraction = fraction
+                    detail = "Preparing video for playback"
+                    if match and info and info.duration > 0:
+                        elapsed = _format_time(h * 3600 + m * 60 + sec)
+                        detail = f"Converted {elapsed} of {_format_time(info.duration)}"
+                    self._local_group.set_state(
+                        "converting",
+                        message=detail,
+                        fraction=fraction,
+                        encoder=encoder_name,
+                        receiver=(
+                            self._local_client.label
+                            if playing_on_tv and self._local_client
+                            else None
+                        ),
+                    )
+                elif message.startswith("Playing"):
+                    playing_on_tv = True
+                    if session.process and session.process.poll() is None:
+                        self._local_group.set_state(
+                            "converting",
+                            fraction=conversion_fraction,
+                            encoder=encoder_name,
+                            receiver=self._local_client.label if self._local_client else "TV",
+                        )
+                    else:
+                        self._local_group.set_state(
+                            "playing",
+                            message=f"Playing on {self._local_client.label if self._local_client else 'TV'}",
+                        )
+                elif "original file" in message:
+                    self._local_group.set_state("direct", message="Sending original video")
                 return False
 
             GLib.idle_add(update)
@@ -387,14 +528,16 @@ class AirPlayDialog(Adw.Dialog):
         def failed(message: str) -> None:
             if generation == self._local_generation:
                 self._close_local()
-                self._local_state.set_subtitle(message)
-                self._toast(message)
+                self._local_error(message, lambda: self._play_local(path))
 
         self._run(play, lambda _r: self._poll_now(), failed)
 
     # ---- playing a link ----
 
     def _on_play_clicked(self, *_args) -> None:
+        if self._selected_local is not None:
+            self._play_local(self._selected_local)
+            return
         try:
             video = check_web_url(self._video_row.get_text())
             subtitle_text = self._subtitle_row.get_text().strip()
@@ -418,7 +561,7 @@ class AirPlayDialog(Adw.Dialog):
 
         def finished(_result: Any = None) -> None:
             self._play_button.set_sensitive(True)
-            self._play_button.set_label("Play on TV")
+            self._play_button.set_label("_Play on TV")
 
         def done(_result: Any) -> None:
             finished()
@@ -610,7 +753,9 @@ class AirPlayDialog(Adw.Dialog):
             seekable = status.duration > 0 and not converting
             self._position_scale.set_sensitive(seekable)
             self._duration_label.set_label(
-                _format_time(status.duration) if seekable else ("Converting" if converting else "Live")
+                _format_time(status.duration)
+                if seekable
+                else ("Converting" if converting else "Live")
             )
             if time.monotonic() >= self._seek_hold_until:
                 self._position_scale.set_range(0, max(1.0, status.duration))

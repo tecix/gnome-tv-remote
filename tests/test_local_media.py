@@ -72,11 +72,13 @@ class PolicyTests(unittest.TestCase):
             "width": 3840,
             "height": 2160,
             "avg_frame_rate": "30000/1001",
+            "duration": "51.25",
             "side_data_list": [{"rotation": -90}],
         }
         with patch("subprocess.run", return_value=Mock(stdout=json.dumps({"streams": [stream]}))):
             info = probe_file(Path("/input.mp4"))
         self.assertEqual(info.rotation, 90)
+        self.assertEqual(info.duration, 51.25)
         self.assertAlmostEqual(info.fps, 29.97002997)
 
 
@@ -129,8 +131,10 @@ class ArgvTests(unittest.TestCase):
         for encoder in ("h264_qsv", "h264_vaapi", "libx264", "libopenh264"):
             with self.subTest(encoder=encoder):
                 args = ffmpeg_args(
-                    Path("/clip.mp4"), Path("/out"),
-                    MediaInfo("hevc", 3840, 2160, 30, 90), encoder,
+                    Path("/clip.mp4"),
+                    Path("/out"),
+                    MediaInfo("hevc", 3840, 2160, 30, 90),
+                    encoder,
                 )
                 if encoder == "h264_qsv":
                     self.assertEqual(args[args.index("-idr_interval") + 1], "0")

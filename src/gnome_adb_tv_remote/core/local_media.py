@@ -35,6 +35,7 @@ class MediaInfo:
     height: int
     fps: float
     rotation: int = 0
+    duration: float = 0.0
 
 
 def needs_transcode(info: MediaInfo, caps: dict | None = None) -> bool:
@@ -94,6 +95,7 @@ def probe_file(path: Path) -> MediaInfo:
         int(stream["height"]),
         fps,
         round(rotation) % 360,
+        max(0.0, float(stream.get("duration") or 0)),
     )
 
 
@@ -302,6 +304,7 @@ class MediaSession:
     """One local server and encoder; close cancels startup and deletes artifacts."""
 
     def __init__(self) -> None:
+        self.info: MediaInfo | None = None
         self.cancelled = threading.Event()
         self.lock = threading.RLock()
         self.process: subprocess.Popen | None = None
@@ -342,6 +345,7 @@ class MediaSession:
     def _prepare(self, path: Path, host: str, caps: dict, progress: Callable[[str], None]) -> str:
         progress("Inspecting local video…")
         info = probe_file(path)
+        self.info = info
         with self.lock:
             if self.cancelled.is_set():
                 raise ValueError("Playback cancelled")
