@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from ..core.remote_v2 import (  # noqa: E402
     REMOTE_PORT,
@@ -48,7 +48,7 @@ from .preferences_dialog import (  # noqa: E402
 from .remote_panel import RemotePanel  # noqa: E402
 from .info_dialog import InfoDialog  # noqa: E402
 from .tv_remote_dialog import TvRemoteDialog  # noqa: E402
-from .airplay_dialog import AirPlayDialog  # noqa: E402
+from .airplay_dialog import AirPlayDialog, PlaybackSummary, _format_time  # noqa: E402
 from ..core.mpris_service import MprisService  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Stop the MPRIS service
         self._mpris.stop()
+        if self._airplay_dialog:
+            self._airplay_dialog.shutdown()
 
         return False  # allow closing
 
@@ -279,9 +281,15 @@ class MainWindow(Adw.ApplicationWindow):
         airplay_btn.connect("clicked", self._on_airplay_clicked)
         header.pack_end(airplay_btn)
 
+        # A compact cast controller remains visible when the AirPlay dialog closes.
+        self._build_airplay_bar(toolbar_view)
+
         # Content (remote)
         self._remote_panel = RemotePanel()
-        toolbar_view.set_content(self._remote_panel)
+        remote_scroll = Gtk.ScrolledWindow()
+        remote_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        remote_scroll.set_child(self._remote_panel)
+        toolbar_view.set_content(remote_scroll)
 
         # Keyboard shortcuts controller
         # Use CAPTURE phase to catch keys before they're consumed by focused widgets
@@ -292,6 +300,110 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_controller(key_controller)
 
         self._set_connected(False)
+
+    def _build_airplay_bar(self, toolbar_view: Adw.ToolbarView) -> None:
+        self._airplay_revealer = Gtk.Revealer()
+        self._airplay_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        box.add_css_class("card")
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        self._airplay_details = Gtk.Button()
+        self._airplay_details.add_css_class("flat")
+        self._airplay_details.set_hexpand(True)
+        self._airplay_details.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["On the TV, playback details"]
+        )
+        self._airplay_details.connect("clicked", self._on_airplay_clicked)
+        details = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        details.append(Gtk.Image(icon_name="video-display-symbolic"))
+        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        labels.set_hexpand(True)
+        title = Gtk.Label(label="On the TV", xalign=0)
+        title.add_css_class("heading")
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        title.set_width_chars(1)
+        self._airplay_subtitle = Gtk.Label(xalign=0)
+        self._airplay_subtitle.add_css_class("caption")
+        self._airplay_subtitle.add_css_class("dim-label")
+        self._airplay_subtitle.set_ellipsize(Pango.EllipsizeMode.END)
+        self._airplay_subtitle.set_width_chars(1)
+        labels.append(title)
+        labels.append(self._airplay_subtitle)
+        details.append(labels)
+        self._airplay_details.set_child(details)
+        box.append(self._airplay_details)
+
+        def button(icon: str, label: str, action: Callable[[], None]) -> Gtk.Button:
+            control = Gtk.Button(icon_name=icon, tooltip_text=label)
+            control.add_css_class("flat")
+            control.add_css_class("circular")
+            control.set_valign(Gtk.Align.CENTER)
+            control.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            control.connect("clicked", lambda *_: action())
+            box.append(control)
+            return control
+
+        self._airplay_back = button(
+            "media-seek-backward-symbolic", "Back 10 seconds",
+            lambda: self._airplay_dialog and self._airplay_dialog._seek_relative(-10),
+        )
+        self._airplay_play = button(
+            "media-playback-pause-symbolic", "Pause",
+            lambda: self._airplay_dialog and self._airplay_dialog._on_play_pause_clicked(),
+        )
+        self._airplay_forward = button(
+            "media-seek-forward-symbolic", "Forward 30 seconds",
+            lambda: self._airplay_dialog and self._airplay_dialog._seek_relative(30),
+        )
+        self._airplay_stop = button(
+            "media-playback-stop-symbolic", "Stop casting",
+            lambda: self._airplay_dialog and self._airplay_dialog._on_stop_clicked(),
+        )
+        self._airplay_revealer.set_child(box)
+        toolbar_view.add_top_bar(self._airplay_revealer)
+
+    def _update_airplay_bar(self, summary: PlaybackSummary) -> None:
+        status = summary.status
+        active = status.active
+        self._airplay_revealer.set_reveal_child(active or summary.preparing)
+        if not (active or summary.preparing):
+            return
+        if summary.error:
+            detail = "Receiver unavailable"
+        elif summary.preparing:
+            detail = summary.detail or "Preparing video…"
+        else:
+            detail = {"LOADING": "Loading…", "PLAYING": "Playing", "PAUSED": "Paused"}.get(
+                status.state, status.state.title()
+            )
+            if summary.converting:
+                detail += " · " + (summary.detail or "Converting for TV…")
+            elif status.duration > 0:
+                detail += f" · {_format_time(status.position)} / {_format_time(status.duration)}"
+        self._airplay_subtitle.set_label(detail)
+        self._airplay_details.set_tooltip_text(summary.error or summary.media or "Playback details")
+        self._airplay_details.update_property([Gtk.AccessibleProperty.DESCRIPTION], [detail])
+        playing = status.state == "PLAYING"
+        label = "Pause" if playing else "Play"
+        self._airplay_play.set_icon_name(
+            "media-playback-pause-symbolic" if playing else "media-playback-start-symbolic"
+        )
+        self._airplay_play.set_tooltip_text(label)
+        self._airplay_play.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        self._airplay_play.set_sensitive(
+            active and status.state in ("PLAYING", "PAUSED")
+            and not summary.preparing and not summary.error
+        )
+        seekable = (
+            active and status.duration > 0 and not summary.preparing
+            and not summary.converting and not summary.error
+        )
+        self._airplay_back.set_sensitive(seekable)
+        self._airplay_forward.set_sensitive(seekable)
+        self._airplay_stop.set_sensitive(True)
 
     def _on_devices_clicked(self, *_args) -> None:
         if self._device_dialog is None:
@@ -311,6 +423,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._airplay_dialog = AirPlayDialog(
                 self._settings,
                 lambda: self._connected_ip or self._settings.get_string("last-connected-ip") or None,
+                on_status=self._update_airplay_bar,
+                on_message=self._toast,
             )
         self._airplay_dialog.open(self)
 

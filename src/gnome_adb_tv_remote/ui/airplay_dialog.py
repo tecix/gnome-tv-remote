@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 import time
@@ -59,10 +60,28 @@ def _format_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+@dataclass
+class PlaybackSummary:
+    """Playback state shared with the main window."""
+
+    status: AirPlayStatus
+    preparing: bool = False
+    converting: bool = False
+    detail: str = ""
+    media: str | None = None
+    error: str | None = None
+
+
 class AirPlayDialog(Adw.Dialog):
     """Plays video links on the TV over AirPlay and controls the playback."""
 
-    def __init__(self, settings: Gio.Settings, default_host: Callable[[], str | None]) -> None:
+    def __init__(
+        self,
+        settings: Gio.Settings,
+        default_host: Callable[[], str | None],
+        on_status: Callable[[PlaybackSummary], None] | None = None,
+        on_message: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__()
         self._selected_local: Path | None = None
         self._selection_generation = 0
@@ -72,9 +91,21 @@ class AirPlayDialog(Adw.Dialog):
         self._play_lock = threading.Lock()
         self._settings = settings
         self._default_host = default_host
+        self._on_status = on_status
+        self._on_message = on_message
+        self._dialog_open = False
+        self._presentation_generation = 0
+        self._shutdown = False
+        self._preparing = False
+        self._stopping = False
+        self._preparation_detail = ""
+        self._poll_error: str | None = None
+        self._local_started = False
+        self._idle_polls = 0
         self._client_obj: AirPlayClient | None = None
         self._poll_id: int | None = None
         self._poll_busy = False
+        self._poll_generation = 0
         self._status = AirPlayStatus()
         self._updating = (
             False  # set while status updates widgets, so their signals don't send requests
@@ -89,9 +120,7 @@ class AirPlayDialog(Adw.Dialog):
         self.set_content_width(460)
         self.set_content_height(820)
         self._build_ui()
-        self.connect(
-            "closed", lambda *_: (self._stop_polling(), self._close_local(stop_receiver=True))
-        )
+        self.connect("closed", self._on_closed)
 
     # ---- public ----
 
@@ -101,8 +130,42 @@ class AirPlayDialog(Adw.Dialog):
             self._receiver_row.set_text(
                 self._settings.get_string("airplay-receiver") or self._default_host() or ""
             )
+        self._dialog_open = True
+        self._presentation_generation += 1
         self.present(parent)
         self._start_polling()
+
+    def shutdown(self) -> None:
+        """Release a local stream when the application window closes."""
+        self._shutdown = True
+        self._dialog_open = False
+        self._stop_polling()
+        self._close_local(stop_receiver=True)
+
+    def _on_closed(self, *_args: Any) -> None:
+        self._dialog_open = False
+        if not (self._status.active or self._preparing or self._local_session):
+            self._stop_polling()
+
+    def _return_to_remote(self, presentation: int) -> None:
+        if self._dialog_open and presentation == self._presentation_generation:
+            self.close()
+
+    def _notify_status(self) -> None:
+        if self._on_status is None:
+            return
+        session = self._local_session
+        converting = bool(session and session.process and session.process.poll() is None)
+        self._on_status(
+            PlaybackSummary(
+                status=self._status,
+                preparing=self._preparing,
+                converting=converting,
+                detail=self._preparation_detail,
+                media=self._sent_video,
+                error=self._poll_error,
+            )
+        )
 
     # ---- UI ----
 
@@ -247,7 +310,10 @@ class AirPlayDialog(Adw.Dialog):
         return btn
 
     def _toast(self, text: str) -> None:
-        self._toast_overlay.add_toast(Adw.Toast(title=text))
+        if self._dialog_open or self._on_message is None:
+            self._toast_overlay.add_toast(Adw.Toast(title=text))
+        else:
+            self._on_message(text)
 
     def _paste_into(self, row: Adw.EntryRow) -> None:
         clipboard = Gdk.Display.get_default().get_clipboard()
@@ -266,6 +332,7 @@ class AirPlayDialog(Adw.Dialog):
     # ---- receiver and requests ----
 
     def _on_receiver_changed(self, *_args) -> None:
+        self._poll_generation += 1
         self._client_obj = None
 
     def _client(self) -> AirPlayClient | None:
@@ -290,7 +357,8 @@ class AirPlayDialog(Adw.Dialog):
             return
 
         def report(callback: Callable[[Any], None], value: Any) -> bool:
-            callback(value)
+            if not self._shutdown:
+                callback(value)
             return False  # run once
 
         def worker() -> None:
@@ -317,6 +385,10 @@ class AirPlayDialog(Adw.Dialog):
     def _close_local(self, stop_receiver: bool = False) -> MediaSession | None:
         """Cancel synchronously; release server/process off the GTK thread."""
         self._local_generation += 1
+        self._preparing = False
+        self._preparation_detail = ""
+        self._local_started = False
+        self._idle_polls = 0
         session, self._local_session = self._local_session, None
         generation = self._local_generation
         client, self._local_client = self._local_client, None
@@ -379,6 +451,9 @@ class AirPlayDialog(Adw.Dialog):
 
     def _local_error(self, message: str, retry: Callable[[], None]) -> None:
         self._local_group.set_state("error", message=message)
+        if not self._dialog_open and self._on_message:
+            self._on_message(message)
+            return
         toast = Adw.Toast(title=message, button_label="Retry")
         toast.connect("button-clicked", lambda *_: retry())
         self._toast_overlay.add_toast(toast)
@@ -430,12 +505,20 @@ class AirPlayDialog(Adw.Dialog):
             self._toast("Enter the receiver's address")
             return
         self._selection_generation += 1
+        presentation = self._presentation_generation
         previous = self._close_local()
         generation = self._local_generation
         session = MediaSession()
         self._local_session = session
         self._local_client = self._client()
         self._sent_video = path.name
+        self._poll_generation += 1
+        self._stopping = False
+        self._status = AirPlayStatus()
+        self._poll_error = None
+        self._preparing = True
+        self._preparation_detail = "Preparing video…"
+        self._notify_status()
         self._local_group.set_state(
             "probing", filename=path.name, metadata="Reading video details…"
         )
@@ -492,6 +575,9 @@ class AirPlayDialog(Adw.Dialog):
                             else None
                         ),
                     )
+                    self._preparation_detail = (
+                        f"Converting · {fraction:.0%}" if fraction is not None else "Converting for TV…"
+                    )
                 elif message.startswith("Playing"):
                     playing_on_tv = True
                     if session.process and session.process.poll() is None:
@@ -508,6 +594,7 @@ class AirPlayDialog(Adw.Dialog):
                         )
                 elif "original file" in message:
                     self._local_group.set_state("direct", message="Sending original video")
+                self._notify_status()
                 return False
 
             GLib.idle_add(update)
@@ -529,8 +616,20 @@ class AirPlayDialog(Adw.Dialog):
             if generation == self._local_generation:
                 self._close_local()
                 self._local_error(message, lambda: self._play_local(path))
+                self._notify_status()
 
-        self._run(play, lambda _r: self._poll_now(), failed)
+        def done(_result: Any) -> None:
+            if generation != self._local_generation:
+                return
+            self._preparing = False
+            self._local_started = True
+            if not self._status.active:
+                self._status = AirPlayStatus(state="LOADING")
+            self._notify_status()
+            self._return_to_remote(presentation)
+            self._poll_now()
+
+        self._run(play, done, failed)
 
     # ---- playing a link ----
 
@@ -558,6 +657,7 @@ class AirPlayDialog(Adw.Dialog):
 
         self._play_button.set_sensitive(False)
         self._play_button.set_label("Sending…")
+        presentation = self._presentation_generation
 
         def finished(_result: Any = None) -> None:
             self._play_button.set_sensitive(True)
@@ -567,16 +667,32 @@ class AirPlayDialog(Adw.Dialog):
             finished()
             if generation != self._local_generation:
                 return
+            self._preparing = False
             self._sent_video = video
-            self._toast("Sent to the TV")
+            if not self._status.active:
+                self._status = AirPlayStatus(state="LOADING")
+            self._notify_status()
+            self._return_to_remote(presentation)
             self._poll_now()
 
         def failed(message: str) -> None:
             finished()
+            if generation != self._local_generation:
+                return
+            self._preparing = False
             self._toast(message)
+            self._notify_status()
 
         previous = self._close_local()
         generation = self._local_generation
+        self._poll_generation += 1
+        self._stopping = False
+        self._status = AirPlayStatus()
+        self._poll_error = None
+        self._preparing = True
+        self._preparation_detail = "Sending video…"
+        self._sent_video = video
+        self._notify_status()
 
         def play(client: AirPlayClient) -> None:
             with self._play_lock:
@@ -605,6 +721,15 @@ class AirPlayDialog(Adw.Dialog):
 
     def _on_stop_clicked(self) -> None:
         self._close_local()
+        self._poll_generation += 1
+        self._stopping = True
+        self._status = AirPlayStatus()
+        self._poll_error = None
+        self._notify_status()
+        if self._client() is None:
+            self._stopping = False
+            self._toast("Enter the receiver's address")
+            return
         generation = self._local_generation
 
         def stop(client: AirPlayClient) -> None:
@@ -612,7 +737,15 @@ class AirPlayDialog(Adw.Dialog):
                 if generation == self._local_generation:
                     client.stop()
 
-        self._run(stop, lambda _r: self._poll_now())
+        def finished(message: str | None = None) -> None:
+            if generation != self._local_generation:
+                return
+            self._stopping = False
+            if message:
+                self._toast(message)
+            self._poll_now()
+
+        self._run(stop, lambda _r: finished(), finished)
 
     def _seek_relative(self, delta: float) -> None:
         target = self._status.position + delta
@@ -687,6 +820,8 @@ class AirPlayDialog(Adw.Dialog):
         return True
 
     def _poll_now(self) -> None:
+        if self._shutdown or self._stopping:
+            return
         client = self._client()
         if client is None:
             self._apply_status(None, "Enter the receiver's address")
@@ -694,25 +829,41 @@ class AirPlayDialog(Adw.Dialog):
         if self._poll_busy:
             return
         self._poll_busy = True
+        generation = self._poll_generation
 
         def worker() -> None:
             try:
                 status, error = client.status(), None
             except AirPlayError as e:
                 status, error = None, str(e)
-            GLib.idle_add(self._on_polled, client, status, error)
+            GLib.idle_add(self._on_polled, client, generation, status, error)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_polled(
-        self, client: AirPlayClient, status: AirPlayStatus | None, error: str | None
+        self, client: AirPlayClient, generation: int,
+        status: AirPlayStatus | None, error: str | None,
     ) -> None:
         self._poll_busy = False
+        if self._shutdown or self._stopping or generation != self._poll_generation:
+            return
         if client is not self._client_obj:
             return  # the address changed meanwhile
         self._apply_status(status, error)
+        if status is not None and self._local_started and not self._preparing:
+            self._idle_polls = 0 if status.active else self._idle_polls + 1
+            if self._idle_polls >= 3:
+                self._close_local()
+                self._notify_status()
+        if not self._dialog_open:
+            if self._status.active or self._preparing or self._local_session:
+                if self._poll_id is None:
+                    self._start_polling()
+            else:
+                self._stop_polling()
 
     def _apply_status(self, status: AirPlayStatus | None, error: str | None) -> None:
+        self._poll_error = error
         active = bool(status and status.active)
         extended = bool(status and status.extended)
         for widget in (self._position_box, self._controls_box):
@@ -722,6 +873,7 @@ class AirPlayDialog(Adw.Dialog):
         if status is None:
             self._status_row.set_title("Receiver not reachable" if error else "Not checked yet")
             self._status_row.set_subtitle(GLib.markup_escape_text(error or ""))
+            self._notify_status()
             return
 
         self._status = status
@@ -734,6 +886,7 @@ class AirPlayDialog(Adw.Dialog):
             url = self._sent_video  # TinyTV plays remuxed HLS through its own proxy
         detail = status.error or url or ""
         self._status_row.set_subtitle(GLib.markup_escape_text(detail))
+        self._notify_status()
         if not active:
             return
 
